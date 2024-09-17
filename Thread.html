@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Thread Deadlock Detection Visualization</title>
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            background-color: #1c1c1c;
+            color: white;
+            padding: 20px;
+            margin: 0;
+        }
+        #visualization {
+            width: 100%;
+            height: 400px;
+            border: 1px solid lightgray;
+            margin-top: 15px;
+        }
+        button {
+            background-color: #0d6efd;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            margin: 10px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0b5ed7;
+        }
+        #status {
+            color: #FFC107;
+            margin-top: 10px;
+        }
+        #idList {
+            margin-top: 15px;
+        }
+        .idItem {
+            background-color: #333;
+            border-radius: 5px;
+            padding: 5px 10px;
+            margin: 2px;
+            display: inline-block;
+        }
+    </style>
+</head>
+<body>
+    <h1>Thread Deadlock Detection Visualization</h1>
+    <div id="visualization"></div>
+    <button onclick="detectDeadlocks()">Detect Deadlock</button>
+    <button onclick="resolveDeadlocks()">Resolve Deadlock</button>
+    <div id="status"></div>
+    
+    <div id="idList">
+        <h2>Available IDs:</h2>
+        <div id="threadList"></div>
+        <div id="resourceList"></div>
+    </div>
+
+    <script>
+        // Initialization for vis.js
+        const nodes = new vis.DataSet();
+        const edges = new vis.DataSet();
+        const container = document.getElementById('visualization');
+        const data = { nodes, edges };
+        const options = {
+            nodes: {
+                shape: 'box',
+                color: {
+                    border: '#2B7CE9',
+                    background: '#97C2FC',
+                    highlight: {
+                        border: '#2B7CE9',
+                        background: '#D2E5FF'
+                    }
+                },
+            },
+            edges: {
+                arrows: 'to'
+            },
+            physics: {
+                enabled: false // Disable physics 
+            },
+            interaction: {
+                zoomView: false, 
+                dragView: false  
+            }
+        };
+        const network = new vis.Network(container, data, options);
+
+        // Thread and resource simulation setup
+        const maxThreads = 4;
+        const maxResources = 3;
+        let threads = {};
+        let resources = {};
+        let deadlockChains = []; // detected deadlocks
+
+        function initializeThreadsAndResources() {
+            threads = {}; 
+            resources = {}; 
+            nodes.clear();
+            edges.clear();
+            let threadListHTML = '';
+            let resourceListHTML = '';
+
+            for (let i = 0; i < maxThreads; i++) {
+                const threadId = `Thread${i}`;
+                threads[threadId] = { holding: [], waiting: null };
+                nodes.add({ id: threadId, label: threadId, color: '#7BE141' });
+                threadListHTML += `<div class="idItem">${threadId}</div>`;
+            }
+            for (let i = 0; i < maxResources; i++) {
+                const resourceId = `Resource${i}`;
+                resources[resourceId] = { heldBy: null, waitingThreads: [] };
+                nodes.add({ id: resourceId, label: resourceId, color: '#FFC107' });
+                resourceListHTML += `<div class="idItem">${resourceId}</div>`;
+            }
+            document.getElementById('threadList').innerHTML = threadListHTML;
+            document.getElementById('resourceList').innerHTML = resourceListHTML;
+
+            network.setData({ nodes, edges });
+        }
+
+        function displayStatus(message, isError = false) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = message;
+            statusDiv.style.color = isError ? '#FF5733' : '#FFC107'; 
+        }
+function createManualConnection(fromId, toId) {
+    const fromNode = nodes.get(fromId);
+    const toNode = nodes.get(toId);
+    if (fromNode && toNode && fromId !== toId) {
+        if (fromId.startsWith('Thread') && toId.startsWith('Resource')) {
+            if (threads[fromId].waiting) {
+                edges.remove({ from: fromId, to: threads[fromId].waiting });
+            }
+            threads[fromId].waiting = toId;
+            if (!resources[toId].waitingThreads.includes(fromId)) {
+                resources[toId].waitingThreads.push(fromId);
+            }
+            edges.add({ from: fromId, to: toId });
+        } else if (fromId.startsWith('Resource') && toId.startsWith('Thread')) {
+            if (resources[fromId].heldBy) {
+                // Resource already held by a thread, so we remove the old connection first
+                edges.remove({ from: resources[fromId].heldBy, to: fromId });
+            }
+            threads[toId].holding.push(fromId);
+            resources[fromId].heldBy = toId;
+            edges.add({ from: fromId, to: toId });
+        } else {
+            displayStatus('Invalid connection. Threads must connect to resources and vice versa.', true);
+            return;
+        }
+        network.setData({ nodes, edges });
+        displayStatus('Connection created.');
+    } else {
+        displayStatus('Invalid connection or same node selected twice.', true);
+    }
+}
+
+// Event listener for double-click interaction to create connections
+network.on("doubleClick", function (params) {
+    if (params.nodes.length === 1) {
+        const selectedNodeId = params.nodes[0];
+        const targetNodeId = prompt("Enter the ID of the node to connect to:");
+        if (targetNodeId && nodes.get(targetNodeId)) {
+            createManualConnection(selectedNodeId, targetNodeId);
+        } else {
+            displayStatus('Invalid node ID.', true);
+        }
+    }
+});
+
+// Detect deadlocks in the current state
+function detectDeadlocks() {
+    deadlockChains = []; // Clear previous deadlock chains
+    let visited = {};
+    let stack = {};
+
+    function visit(threadId, chain = []) {
+        if (visited[threadId]) {
+            if (stack[threadId]) {
+                deadlockChains.push([...chain, threadId]);
+                return;
+            }
+            return;
+        }
+        visited[threadId] = true;
+        stack[threadId] = true;
+        chain.push(threadId);
+
+        const waitingResource = threads[threadId].waiting;
+        if (waitingResource && resources[waitingResource].heldBy && resources[waitingResource].heldBy !== threadId) {
+            visit(resources[waitingResource].heldBy, chain);
+        }
+
+        chain.pop();
+        stack[threadId] = false;
+    }
+
+    Object.keys(threads).forEach(threadId => {
+        if (!visited[threadId]) {
+            visit(threadId, []);
+        }
+    });
+
+    if (deadlockChains.length > 0) {
+        displayStatus('Deadlock detected!', true);
+    } else {
+        displayStatus('No deadlocks detected.');
+    }
+}
+
+function resolveDeadlocks() {
+    if (deadlockChains.length === 0) {
+        displayStatus('No deadlock to resolve.', false);
+        return;
+    }
+
+    deadlockChains.forEach(chain => {
+        const threadId = chain[0]; // Get the first thread in the deadlock chain
+        const resource = threads[threadId].waiting; // Get the resource the thread is waiting on
+
+        // Remove the edge from the thread to the resource
+        if (resource) {
+            const edgeId = edges.get({
+                filter: function (item) {
+                    return item.from === threadId && item.to === resource;
+                }
+            });
+            edges.remove(edgeId);
+            threads[threadId].waiting = null; // Update the thread's waiting resource to null
+            resources[resource].waitingThreads = resources[resource].waitingThreads.filter(t => t !== threadId); // Update the resource's waiting threads
+        }
+
+        // Update the thread's holding resources to null
+        threads[threadId].holding.forEach(heldResource => {
+            const edgeId = edges.get({
+                filter: function (item) {
+                    return item.from === heldResource && item.to === threadId;
+                }
+            });
+            edges.remove(edgeId);
+            resources[heldResource].heldBy = null; // Update the resource's heldBy to null
+        });
+        threads[threadId].holding = []; // Clear the thread's holding resources
+    });
+
+    deadlockChains = [];
+    displayStatus('Deadlock resolved.', false);
+    network.setData({ nodes, edges }); // Update the network visualization
+}
+
+
+        initializeThreadsAndResources();
+    </script>    
+</body>
+</html>
